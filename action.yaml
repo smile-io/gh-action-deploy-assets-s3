@@ -1,0 +1,32 @@
+name: "Deploy assets"
+description: "Deploys a assets release to a s3 bucket under Cloudfront"
+inputs:
+  release_version:
+    description: "The new release version of assets that should be deployed."
+    required: true
+  short_environment:
+    description: "Environment short-form as used in Smile's infrastructure-live repo. One of `dev`, `stage`, `prod`"
+    required: true
+  terraform_module_name:
+    description: "Name of the Terraform module that manages this application's release."
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+    - name: Perform deployment
+      id: perform_deployment
+      shell: bash
+      run: |
+        terraform-update-variable \
+          --name "s3_bucket_base_path" \
+          --value "${{ inputs.release_version }}" \
+          --vars-path "${{ inputs.short_environment }}/us-east-1/${{ inputs.short_environment }}/services/${{ inputs.terraform_module_name }}/terragrunt.hcl" \
+          --git-url "https://github.com/smile-io/infrastructure-live.git" \
+          --git-checkout-path "${{ runner.temp }}/infrastructure-live" \
+          --git-user-email "infrastructure+github-ci@smile.io" \
+          --git-user-name "smile-ci-service" \
+          --github-token-secrets-manager-arn "arn:aws:secretsmanager:us-east-1:877068819435:secret:smile-ci-service-github-token-mKMOOR" \
+          --ssh-key-secrets-manager-arn "arn:aws:secretsmanager:us-east-1:877068819435:secret:smile-ci-service-github-ssh-private-key-osnOEZ"
+        terragrunt apply --terragrunt-working-dir "${{ runner.temp }}/infrastructure-live/${{ inputs.short_environment }}/us-east-1/${{ inputs.short_environment }}/services/${{ inputs.terraform_module_name }}"  --terragrunt-iam-role "arn:aws:iam::${{ fromJson('{"dev": "307739032832", "stage": "389299793054", "prod": "964498696771"}')[inputs.short_environment] }}:role/allow-auto-deploy-from-other-accounts" -input=false -auto-approve
