@@ -10,6 +10,9 @@ inputs:
   terraform_module_name:
     description: "Name of the Terraform module that manages this application's release."
     required: true
+  environment_mapping_json:
+    description: "Mapping of long environment names."
+    default: '{"dev": "dev", "stage": "staging", "prod": "production"}'
 runs:
   using: "composite"
   steps:
@@ -30,3 +33,63 @@ runs:
           --github-token-secrets-manager-arn "arn:aws:secretsmanager:us-east-1:877068819435:secret:smile-ci-service-github-token-mKMOOR" \
           --ssh-key-secrets-manager-arn "arn:aws:secretsmanager:us-east-1:877068819435:secret:smile-ci-service-github-ssh-private-key-osnOEZ"
         terragrunt apply --terragrunt-working-dir "${{ runner.temp }}/infrastructure-live/${{ inputs.short_environment }}/us-east-1/${{ inputs.short_environment }}/services/${{ inputs.terraform_module_name }}"  --terragrunt-iam-role "arn:aws:iam::${{ fromJson('{"dev": "307739032832", "stage": "389299793054", "prod": "964498696771"}')[inputs.short_environment] }}:role/allow-auto-deploy-from-other-accounts" -input=false -auto-approve
+    - name: Handle Successful Rollback
+      if: ${{ failure() && steps.perform_deployment.conclusion == 'failure' }}
+      shell: bash
+      run: |
+         echo "::error title=Error Updating Infra Live::Git error occured while pushing updates to smile-io/infrastructure-live. Please contact the Platform team for assistance."
+        # Datadog API Event
+        # Define the event details
+        TITLE="[${{ fromJson(inputs.environment_mapping_json)[inputs.short_environment] }}] ${{ inputs.helm_release_name }} deployment rollback"
+        TEXT="%%% \n${{ inputs.helm_release_name }} app was rolled back in ${{ inputs.short_environment }}.\n\nCheck GitHub Action details [here](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+        TAGS=("environment:${{ fromJson(inputs.environment_mapping_json)[inputs.short_environment] }}" "service:${{ inputs.helm_release_name }}" "action:rollback")
+        JSON_TAGS=$(printf '%s\n' "${TAGS[@]}" | jq -R . | jq -s .)
+        ALERT_TYPE="warning"
+
+        # Use curl to send the event to Datadog
+        RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "https://api.datadoghq.com/api/v1/events" \
+             -H "Content-Type: application/json" \
+             -H "DD-API-KEY: ${DD_API_KEY}" \
+             -d "{
+                 \"title\": \"${TITLE}\",
+                 \"text\": \"${TEXT}\",
+                 \"tags\": ${JSON_TAGS},
+                 \"alert_type\": \"$ALERT_TYPE\"
+             }")
+
+        if [ "$RESPONSE" -ne 202 ]; then
+            echo "Failed to send event to Datadog. API responded with status code: $RESPONSE"
+            exit 1
+        else
+            echo "Event sent to Datadog successfully."
+        fi
+    - name: Handle Failed Rollback
+      if: ${{ failure() && steps.release_changes.conclusion == 'failure' && steps.detect_rollback_success.outputs.release_status != 'deployed' }}
+      shell: bash
+      run: |
+          echo "::error title=Error With Release::An unexpected error occured and Helm was unable to roll back successfully. Your changes may be partially deployed, and a manual rollback to a known working version via 'smile-cli app rollback' is recommended."
+          # Datadog API Event
+          # Define the event details
+          TITLE="[${{ fromJson(inputs.environment_mapping_json)[inputs.short_environment] }}] ${{ inputs.helm_release_name }} deployment rollback"
+          TEXT="%%% \n${{ inputs.helm_release_name }} app rollback failed in ${{ inputs.short_environment }}.\n\nCheck GitHub Action details [here](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          TAGS=("environment:${{ fromJson(inputs.environment_mapping_json)[inputs.short_environment] }}" "service:${{ inputs.helm_release_name }}" "action:failed_rollback")
+          JSON_TAGS=$(printf '%s\n' "${TAGS[@]}" | jq -R . | jq -s .)
+          ALERT_TYPE="warning"
+
+          # Use curl to send the event to Datadog
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "https://api.datadoghq.com/api/v1/events" \
+               -H "Content-Type: application/json" \
+               -H "DD-API-KEY: ${DD_API_KEY}" \
+               -d "{
+                   \"title\": \"${TITLE}\",
+                   \"text\": \"${TEXT}\",
+                   \"tags\": ${JSON_TAGS},
+                   \"alert_type\": \"$ALERT_TYPE\"
+               }")
+
+          if [ "$RESPONSE" -ne 202 ]; then
+              echo "Failed to send event to Datadog. API responded with status code: $RESPONSE"
+              exit 1
+          else
+              echo "Event sent to Datadog successfully."
+          fi
