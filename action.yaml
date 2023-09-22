@@ -21,6 +21,7 @@ runs:
       env:
         git_host: github.com
         git_username: git
+        GITHUB_TOKEN: $SMILE_CI_SERVICE_GITHUB_SSH_PRIVATE_KEY
       run: |
         eval `ssh-agent -s`
         ssh-add - <<< "${SMILE_CI_SERVICE_GITHUB_SSH_PRIVATE_KEY}"
